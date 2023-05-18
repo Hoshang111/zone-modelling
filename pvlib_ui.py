@@ -228,42 +228,64 @@ pv_model = Custom_System()
 
 # COMMAND ----------
 
+def get_met_data_sources():
+    """
+    Returns a list of table names in the data repository schema "sandbox.met_data"
+    """
+    return spark.sql("SHOW TABLES in sandbox.met_data").rdd.map(lambda x: x.tableName).collect()
 
-    # HOSHANG ---  just coppied this code from an earlier attempt to build it as a class. Build the ui into the Model_Chain class, similar to how we built the scopti_tools ui into the scenario class.
+def get_modules():
+    """
+    Return a list of all modules in the online database
+    """
+    # retrieve CEC module parameters from the SAM libraries
+    # with the "name" argument set to "CECMod"
+    # List also seen here:
+    # https://solarequipment.energy.ca.gov/Home/PVModuleList
 
-    def init_ui(self):
-        self.met_data_widget = widgets.Dropdown(options=self.get_met_data_sources(), description='Met Data', value=None)
+    # the CEC modules are a pandas DataFrame oriented as columns, transpose to arrange
+    # as indices
+    # CECMODS.T.head()
+    # https://pvsc-python-tutorials.github.io/PVSC48-Python-Tutorial/Tutorial%204%20-%20Model%20a%20Module%27s%20Performance.html
+    CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
+    module_list = []
+    for col in CECMODS.columns:
+        module_list.append(col)
+    
+    return module_list
 
-        self.array_type_widget = widgets.RadioButtons(options=['SAT', 'MAV'], description='Array Type', value=None)
-        self.array_type_widget.observe(self.on_value_change, 'value')
 
-        self.load_button_widget = widgets.Button(description="Load")
-        self.load_button_widget.on_click()
+def pvlib_ui():
+    output = widgets.Output()
 
-        self.output = widgets.Output()
-        display(self.met_data_widget, self.array_type_widget, self.load_button_widget, self.output)
-
-
-    def on_value_change(self, change):
-        with self.output:
+    def on_value_change(change):
+        with output:
             output.clear_output()
             print(change.new)
-        # attr_name = self.__fetch_attr_name(change.owner.description)
-        # setattr(self, attr_name, change.new)
 
-    # def on_load(self):
+    def on_load_clicked(_):
+        with output:
+            output.clear_output()
+            print(met_data_widget.value)
+                
+
+    sources = get_met_data_sources()
+    met_data_widget = widgets.Dropdown(options=sources, description='Met Data', value=None)
         
+    
+    module_widget = widgets.Dropdown(options=get_modules(), description='Module Name', value=None)
 
+    array_type_widget = widgets.RadioButtons(options=['SAT', 'MAV'], description='Array Type', value=None)
+    array_type_widget.observe(on_value_change, 'value')
 
-    def get_met_data_sources(self):
-        """
-        Returns a list of table names in the data repository schema "sandbox.met_data"
-        """
-        return spark.sql("SHOW TABLES in sandbox.met_data").rdd.map(lambda x: x.tableName).collect()
+    load_button_widget = widgets.Button(description="Load")
+    load_button_widget.on_click(on_load_clicked)
+    display(met_data_widget, module_widget, array_type_widget, load_button_widget, output)
+
 
 # COMMAND ----------
 
-init_ui()
+pvlib_ui()
 
 # COMMAND ----------
 
