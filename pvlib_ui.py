@@ -14,16 +14,14 @@ from pvlib.location import Location
 class pvlib_wrapper():
     def __init__(self):
         """
-        This is a wrapper around the PVlib library classes ModelChain, PVSystem and Location. It is designed to provide a UI for inputing required parameters and then running a simulation. The output of the simulation
+        This is a wrapper around the PVlib library classes ModelChain, PVSystem and Location. It is designed to provide a UI for inputing required parameters and then running a simulation.
 
-        Simulation Steps:
+        Simulation Steps (i.e. what should happen when you press the "load_all" button):
 
-        1. Start with Solcast data
+        1. Extract the relevant parameters from the Solcast data (funtion "get_met_data"), arange them into a dataframe called "sim_data" with the column names defined here:
 
-        2. Extract the relevant parameters from the Solcast data, arange them into a dataframe called "weather" with the column names defined here:
-
-        "weather" dataframe. Take the solcast columns, rename them with the correct pvlib names, return the weather dataframe.
         https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.modelchain.ModelChain.prepare_inputs.html#pvlib.modelchain.ModelChain.prepare_inputs
+
         Solcast Name        PVLib Name
         -----------         -----------
         PeriodStart         PeriodStart
@@ -32,18 +30,32 @@ class pvlib_wrapper():
         Dni                 dni
         Ghi                 ghi
         WindSpeed10m        wind_speed
-
-
+        Azimuth             solar_azimuth
+        Zenith              solar_zenith
+        --                  albedo          Note: take the "albedo" value  from the Common Parameters input by the user in the UI 
         
-        Azimuth
-        Zenith
 
-        3. 
 
-        2. Continue extracting the relevant data from the Solcast dataframe. Next, we need
-        If SAT, determine tracking angle. If MAV, used fixed angles. (function "get_tilt_azimuth")
+        2. Next, we use the solcast "solar_zenith" and "solar_azimuth" values to calculate "surface_tilt" and "surface_azimuth".
+        Use the function "get_tilt_azimuth" defined below.
+        If SAT, determine tracking angle. If MAV, used fixed angles.
 
-        3. Calculate POA Irradiance
+        Return df's "surface_tilt" and "surface_azimuth" and append to sim_data df
+
+
+        3. Get temperature module parameters (function )
+
+
+        4. Lets initialise the "PVSystem" class here.
+
+
+        5. Next we want to calculate the POA Irradiance, this is the actual irradiance hitting the PV panel, taking into account the orientation of the panel.
+        This is done using the PVSystem.get_irradiance() method, but this method has to be overwritten because the calculation is different depending on whether the array is SAT vs MAV.
+
+
+        6. Calculate the Cell Temperature. 
+
+        Last Step. Return a dataframe with the hourly Pmp and curve_info
 
         """
         # this is where I plan to initialise the UI.
@@ -55,16 +67,20 @@ class pvlib_wrapper():
         # Common Params - Generic
         self.met_data = None #this will be the solcast dataframe
         self.met_data_name = None #this should be the name of the met_data (solcast) file
-        self.weather = None
+        self.sim_data = None
         self.array_type = None # string: 'SAT' or 'MAV'
         self.modules_per_string = 1
         self.strings_per_inverter = 1
         self.racking_model = None # string: ‘open_rack’, ‘close_mount’ or ‘insulated_back’
+        self.albedo = None # int
+        # self.surface_type = None # future, related to
+        self.model = None # string: 'sapm', 'pvsyst', 'faiman', 'fuentes', and 'noct_sam'
         
         # Common Params - Module
         self.bifacial = True
         self.bifacial_factor = 0.85
         self.module_type = None # string "glass_polymer" or "glass_glass"
+        self.module_name = None # string from module_widget dropdown
 
         # SAT Params
         self.sat_axis_tilt = 0
@@ -82,7 +98,10 @@ class pvlib_wrapper():
 
         ####################
         # These are parameters that do not need gui inputs
-        # self.
+        self.surface_tilt = None
+        self.surface_azimuth = None
+        self.module_parameters = self.CECMODS[self.module_name]
+        self.temperature_model_parameters = None
 
     def get_tilt_azimuth(self):
         """
@@ -96,7 +115,7 @@ class pvlib_wrapper():
                                                         backtrack=self.sat_backtrack,
                                                         gcr=self.sat_mod_length / self.sat_pitch)
             # created for use in pvfactors timeseries
-            orientation = sat_mount.get_orientation(filter_df['Zenith'],filter_df['Azimuth'])
+            orientation = sat_mount.get_orientation(self.weather['solar_zenith'],self.weather['solar_azimuth'])
             self.surface_tilt = orientation['surface_tilt']
             self.surface_azimuth = orientation['surface_azimuth']
 
@@ -104,17 +123,60 @@ class pvlib_wrapper():
             self.surface_tilt = self.mav_tilt
             self.surface_azimuth = self.mav_azimuth
 
+    def get_met_data(self):
+        """
+        function to extract relevant data out of Solcast dataframe.
+        """
+        # write code here.
+        return
+    
+    def get_mod_params(self):
+        """
+        Extract module parameters from GUI
+        """
+        # write code here
+        return
+
+    def get_temperature_model_parameters(self):
+        """
+        Get temperature_model_parameters depending on module properties
+        """
+        if self.bifacial:
+            self.temperature_module_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_glass']
+        else:
+            self.temperature_module_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_polymer']
+
+
     # "location" and "system" are parameters inherited from ModelChain. I am initialising them with the custom classes.
     def load_all(self):
-        self.get_tilt_azimyth()
+        #step 1
+        self.get_met_data()
+        #step 2
+        self.get_tilt_azimuth()
+        #step 3
+        self.get_temperature_model_parameters()
+        #step 4
+        self.system = Custom_System(surface_tilt=self.surface_tilt,
+                                    surface_azimuth=self.surface_azimuth,
+                                    albedo=self.albedo,
+                                    module=self.module,
+                                    module_type=self.module_type,
+                                    module_parameters=self.module_parameters,
+                                    temperature_model_parameters=self.temperature_model_parameters,
+                                    modules_per_string=self.modules_per_string,
+                                    strings_per_inverter=self.strings_per_inverter)
         self.location = Custom_Location()
-        self.system = Custom_System()
-        self.mc = ModelChain(self.system,self.location)
+        # self.mc = ModelChain(self.system,self.location)
 
-    # Pass met_data
-    def pass_solcast(self):
-        pass
-        
+        #step 5
+        self.sim_data = self.sim_data.append(self.system.get_irradiance())
+
+        #step 6
+        self.sim_data = self.sim_data.append(self.system.get_irradiance())
+
+        #step 7
+        self.sim_data["cell_temp_vmp"] = self.system.get_cell_temperature(self.sim_data['poa_global'], self.sim_data['temp_air'], self.sim_data['wind_speed'], model="sapm", effective_irradiance=None)
+
 
 
 class Custom_System(PVSystem):
