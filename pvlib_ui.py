@@ -55,7 +55,9 @@ class pvlib_wrapper():
 
         6. Calculate the Cell Temperature. 
 
-        Last Step. Return a dataframe with the hourly Pmp and curve_info
+
+        7. 
+        Last Step. Return a dataframe with the hourly Pmp and curve_info. This is done using the "pvsystem.singlediod" equation
 
         """
         # this is where I plan to initialise the UI.
@@ -172,10 +174,10 @@ class pvlib_wrapper():
         self.sim_data = self.sim_data.append(self.system.get_irradiance())
 
         #step 6
-        self.sim_data = self.sim_data.append(self.system.get_irradiance())
+        self.sim_data["cell_temp_vmp"] = self.system.get_cell_temperature(self.sim_data['poa_global'], self.sim_data['temp_air'], self.sim_data['wind_speed'], model="sapm", effective_irradiance=None)
 
         #step 7
-        self.sim_data["cell_temp_vmp"] = self.system.get_cell_temperature(self.sim_data['poa_global'], self.sim_data['temp_air'], self.sim_data['wind_speed'], model="sapm", effective_irradiance=None)
+        
 
 
 
