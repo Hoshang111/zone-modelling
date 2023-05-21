@@ -6,10 +6,11 @@
 from IPython.display import display
 from datetime import datetime
 import ipywidgets as widgets
+import pvlib as pl
 from pvlib.pvsystem import PVSystem
 from pvlib.modelchain import ModelChain
 from pvlib.location import Location
-
+from pvlib.temperature import TEMPERATURE_MODEL_PARAMETERS
 
 class pvlib_wrapper():
     def __init__(self):
@@ -102,7 +103,7 @@ class pvlib_wrapper():
         # These are parameters that do not need gui inputs
         self.surface_tilt = None
         self.surface_azimuth = None
-        self.module_parameters = self.CECMODS[self.module_name]
+        self.module_parameters = None
         self.temperature_model_parameters = None
 
     def get_tilt_azimuth(self):
@@ -111,13 +112,13 @@ class pvlib_wrapper():
         """
         if self.array_type == "SAT":
             # load solar position and tracker orientation for use in pvsystem object
-            sat_mount = pvsystem.SingleAxisTrackerMount(axis_tilt=self.sat_axis_tilt,  # flat array
+            sat_mount = pl.pvsystem.SingleAxisTrackerMount(axis_tilt=self.sat_axis_tilt,  # flat array
                                                         axis_azimuth=self.sat_axis_azimuth,  # north-facing azimuth
                                                         max_angle=self.sat_max_angle,  # a common maximum rotation
                                                         backtrack=self.sat_backtrack,
                                                         gcr=self.sat_mod_length / self.sat_pitch)
             # created for use in pvfactors timeseries
-            orientation = sat_mount.get_orientation(self.weather['solar_zenith'],self.weather['solar_azimuth'])
+            orientation = sat_mount.get_orientation(self.sim_data['solar_zenith'],self.sim_data['solar_azimuth'])
             self.surface_tilt = orientation['surface_tilt']
             self.surface_azimuth = orientation['surface_azimuth']
 
@@ -125,12 +126,25 @@ class pvlib_wrapper():
             self.surface_tilt = self.mav_tilt
             self.surface_azimuth = self.mav_azimuth
 
-    def get_met_data(self):
+    def get_met_data(self, metdata, albedo):
         """
         function to extract relevant data out of Solcast dataframe.
         """
-        # write code here.
-        return
+        solcast_query = "select * from sandbox.met_data." + metdata
+        df_solcast = spark.sql(solcast_query).toPandas()
+        simdata_df = pd.DataFrame()
+        simdata_df['PeriodStart'] = df_solcast['PeriodStart']
+        simdata_df['temp_air'] = df_solcast['AirTemp']
+        simdata_df['dhi'] = df_solcast['Dhi']
+        simdata_df['dni'] = df_solcast['Dni']
+        simdata_df['ghi'] = df_solcast['Ghi']
+        simdata_df['wind_speed'] = df_solcast['WindSpeed10m']
+        simdata_df['solar_azimuth'] = df_solcast['Azimuth']
+        simdata_df['solar_zenith'] = df_solcast['Zenith']
+        simdata_df['albedo'] = albedo
+        simdata_df.set_index('PeriodStart')
+
+        return simdata_df
     
     def get_mod_params(self):
         """
@@ -144,9 +158,9 @@ class pvlib_wrapper():
         Get temperature_model_parameters depending on module properties
         """
         if self.bifacial:
-            self.temperature_module_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_glass']
+            self.temperature_model_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_glass']
         else:
-            self.temperature_module_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_polymer']
+            self.temperature_model_parameters = TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_polymer']
 
 
     # "location" and "system" are parameters inherited from ModelChain. I am initialising them with the custom classes.
@@ -230,6 +244,13 @@ pv_model = Custom_System()
 
 # COMMAND ----------
 
+import pvlib as pl
+import pandas as pd
+from pvlib.pvsystem import PVSystem, FixedMount
+from pvlib.location import Location
+from pvlib.modelchain import ModelChain
+
+
 def get_met_data_sources():
     """
     Returns a list of table names in the data repository schema "sandbox.met_data"
@@ -256,33 +277,206 @@ def get_modules():
     
     return module_list
 
+def get_location(metdata):
+    string = metdata.strip('solcast')
+    string = string.replace('__', '-')
+    string = string.replace('_', '.')
+    dot_count = 0
+    i = 0
+    for character in string:
+        if character == "." and dot_count == 1:
+            break
+        elif character == "." and dot_count != 1:
+            dot_count += 1
+        i += 1
+    latitude = string[:i]    
+    longitude= string[i+1:]
+    return float(latitude), float(longitude)
+
+def create_simdata(metdata, albedo):
+        solcast_query = "select * from sandbox.met_data." + metdata
+        df_solcast = spark.sql(solcast_query).toPandas()
+        simdata_df = pd.DataFrame()
+        simdata_df['PeriodStart'] = df_solcast['PeriodStart']
+        simdata_df['temp_air'] = df_solcast['AirTemp']
+        simdata_df['dhi'] = df_solcast['Dhi']
+        simdata_df['dni'] = df_solcast['Dni']
+        simdata_df['ghi'] = df_solcast['Ghi']
+        simdata_df['wind_speed'] = df_solcast['WindSpeed10m']
+        simdata_df['solar_azimuth'] = df_solcast['Azimuth']
+        simdata_df['solar_zenith'] = df_solcast['Zenith']
+        simdata_df['albedo'] = albedo
+        simdata_df.set_index('PeriodStart')
+
+        return simdata_df
+
 
 def pvlib_ui():
+    CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
     output = widgets.Output()
+    
+    def create_new_system(simdata_df):
+        # Initialise new wrapper class
+        NewSystem = pvlib_wrapper()
+        solcast_query = "select * from sandbox.met_data." + met_data_widget.value
+        df_solcast = spark.sql(solcast_query).toPandas()
 
+        # Load Generic Params
+        NewSystem.met_data = df_solcast
+        NewSystem.met_data_name = met_data_widget.value            
+        NewSystem.sim_data = simdata_df
+        NewSystem.array_type = array_type_widget.value
+        NewSystem.modules_per_string = modules_per_string_widget.value
+        NewSystem.strings_per_inverter = strings_per_inverter_widget.value
+        NewSystem.racking_model = racking_model_widget.value
+        NewSystem.albedo = albedo_widget.value
+        NewSystem.model = model_widget.value
+
+        # Load Module Params
+        NewSystem.bifacial = bifacial_widget.value
+        NewSystem.bifacial_factor = bifacial_factor_widget.value
+        NewSystem.module_type = module_type_widget.value
+        NewSystem.module_name = module_widget.value
+
+        # SAT Params
+        if NewSystem.array_type == "SAT":
+            NewSystem.sat_axis_tilt = sat_axis_tilt_widget.value
+            NewSystem.sat_axis_azimuth = sat_axis_azimuth_widget.value
+            NewSystem.sat_max_angle = sat_max_angle_widget.value
+            NewSystem.sat_backtrack = sat_backtrack_widget.value
+            NewSystem.sat_pitch = sat_pitch_widget.value
+            NewSystem.sat_height = sat_height_widget.value
+            NewSystem.sat_mod_length = sat_mod_length_widget.value
+
+
+        #MAV Params
+        if NewSystem.array_type == "MAV":
+            NewSystem.mav_tilt = mav_tilt_widget.value
+            NewSystem.mav_azimuth = mav_azimuth_widget.value
+
+
+        # Get Module Parameters
+        NewSystem.module_parameters = CECMODS[module_widget.value]
+        NewSystem.get_tilt_azimuth()
+
+        # Get Temperature Model Parameters and append to simdata
+        NewSystem.get_temperature_model_parameters()
+
+        return NewSystem
+
+
+    # Disables inputs based on Array Widget value
     def on_value_change(change):
         with output:
             output.clear_output()
             print(change.new)
-
+            if change.new == "SAT":
+                sat_axis_tilt_widget.disabled = False
+                sat_axis_azimuth_widget.disabled = False
+                sat_max_angle_widget.disabled = False
+                sat_backtrack_widget.disabled = False
+                sat_pitch_widget.disabled = False
+                sat_height_widget.disabled = False
+                sat_mod_length_widget.disabled = False
+                mav_tilt_widget.disabled = True
+                mav_azimuth_widget.disabled = True
+            if change.new == "MAV":
+                mav_tilt_widget.disabled = False
+                mav_azimuth_widget.disabled = False
+                sat_axis_tilt_widget.disabled = True
+                sat_axis_azimuth_widget.disabled = True
+                sat_max_angle_widget.disabled = True
+                sat_backtrack_widget.disabled = True
+                sat_pitch_widget.disabled = True
+                sat_height_widget.disabled = True
+                sat_mod_length_widget.disabled = True
+                
     def on_load_clicked(_):
         with output:
-            output.clear_output()
-            print(met_data_widget.value)
-                
+            # Create sim data dataframe and system
+            latitude, longitude = get_location(met_data_widget.value)
+            simdata_df = create_simdata(met_data_widget.value, albedo_widget.value)
+            System = create_new_system(simdata_df)
+            PV_location = Location(latitude, longitude)
+            PV_system = PVSystem(surface_tilt=System.surface_tilt,
+                                    surface_azimuth=System.surface_azimuth,
+                                    albedo=System.albedo,
+                                    module=System.module_name,
+                                    module_type=System.module_type,
+                                    module_parameters=System.module_parameters,
+                                    temperature_model_parameters=System.temperature_model_parameters,
+                                    modules_per_string=System.modules_per_string,
+                                    strings_per_inverter=System.strings_per_inverter,
+                                    racking_model=System.racking_model)
+            System_ModelChain = ModelChain(PV_system, PV_location)
 
+            simdata_df['surface_tilt'] = System.surface_tilt
+            simdata_df['surface_azimuth'] = System.surface_azimuth
+
+    layout = widgets.Layout(width='auto')
+    style = {'description_width': 'initial'}
     sources = get_met_data_sources()
-    met_data_widget = widgets.Dropdown(options=sources, description='Met Data', value=None)
-        
+    met_data_widget = widgets.Dropdown(options=sources, description='Met Data', value=None, style=style)
     
-    module_widget = widgets.Dropdown(options=get_modules(), description='Module Name', value=None)
-
-    array_type_widget = widgets.RadioButtons(options=['SAT', 'MAV'], description='Array Type', value=None)
+    # Create Common Param Widgets
+    array_type_widget = widgets.RadioButtons(options=['SAT', 'MAV'], description='Array Type', value=None, layout=layout, style=style)
     array_type_widget.observe(on_value_change, 'value')
+    modules_per_string_widget = widgets.IntText(value=1, description='Modules Per String', disabled=False, layout=layout, style=style)
+    strings_per_inverter_widget = widgets.IntText(value=1, description='Strings Per Inverter', disabled=False, layout=layout, style=style)
+    racking_model_widget = widgets.Dropdown(options=['open_rack', 'close_mount', 'insulated_back'], description='Racking Model', value=None, layout=layout, style=style)
+    albedo_widget = widgets.FloatSlider(value=0.3, min=0.1,max=0.4,step=0.1, description='Albedo',
+    disabled=False, continuous_update=False, orientation='horizontal', readout=True,readout_format='.1f')
+    model_widget = widgets.Dropdown(options=['sapm', 'pvsyst', 'faiman', 'fuentes', 'noct_sam'], description='Model', value=None, layout=layout, style=style)
 
-    load_button_widget = widgets.Button(description="Load")
+    # Create Module Param Widgets
+    bifacial_widget = widgets.Checkbox(value=False, description='Bifacial', disabled=False,indent=False, layout=layout, style=style)
+    bifacial_factor_widget = widgets.FloatText(value=0.85, description='Bifacial Factor', disabled=False, layout=layout, style=style)
+    module_widget = widgets.Dropdown(options=get_modules(), description='Module Name', value=None)
+    module_type_widget = widgets.RadioButtons(options=['glass_polymer', 'glass_glass'], description='Module Type', value=None, layout=layout, style=style)
+
+    # Create SAT Param Widgets
+    sat_axis_tilt_widget = widgets.FloatText(value=0, description='Axis Tilt', disabled=True, layout=layout, style=style)
+    sat_axis_azimuth_widget = widgets.FloatText(value=0, description='Axis Azimuth', disabled=True, layout=layout, style=style)
+    sat_max_angle_widget = widgets.FloatText(value=60, description='Max Angle', disabled=True, layout=layout, style=style)
+    sat_backtrack_widget = widgets.Checkbox(value=False, description='Backtrack', disabled=True,indent=False, layout=layout, style=style)
+    sat_pitch_widget = widgets.FloatText(value=5, description='Pitch', disabled=True, layout=layout, style=style)
+    sat_height_widget = widgets.FloatText(value=1.5, description='Height', disabled=True, layout=layout, style=style)
+    sat_mod_length_widget = widgets.FloatText(value=2.1, description='Module Length', disabled=True, layout=layout, style=style)
+
+    # Create MAV Param Widgets
+    mav_tilt_widget = widgets.FloatText(value=0, description='Tilt', disabled=True, layout=layout, style=style)
+    mav_azimuth_widget = widgets.FloatText(value=0, description='Azimuth', disabled=True, layout=layout, style=style)
+
+    # Create Common Tab
+    array_box =  widgets.HBox([array_type_widget, albedo_widget])
+    strings_box = widgets.HBox([modules_per_string_widget, strings_per_inverter_widget])
+    model_box = widgets.HBox([model_widget, racking_model_widget])
+    generic_box = widgets.VBox([met_data_widget, array_box, strings_box, model_box])
+
+    # Create Module Tab
+    bifacial_box = widgets.HBox([bifacial_factor_widget, bifacial_widget])
+    mod_box = widgets.HBox([module_widget, module_type_widget])
+    module_box = widgets.VBox([bifacial_box, mod_box])
+    
+    # Create SAT Tab
+    sat1_box = widgets.HBox([sat_axis_tilt_widget, sat_axis_azimuth_widget, sat_max_angle_widget, sat_backtrack_widget])
+    sat2_box = widgets.HBox([sat_pitch_widget, sat_height_widget, sat_mod_length_widget])
+    sat_box = widgets.VBox([sat1_box, sat2_box])
+
+    # Create MAV Tab
+    mav_box = widgets.HBox([mav_tilt_widget, mav_azimuth_widget])
+
+    load_button_widget = widgets.Button(description="Load", disabled=False)
     load_button_widget.on_click(on_load_clicked)
-    display(met_data_widget, module_widget, array_type_widget, load_button_widget, output)
+
+    children = [generic_box, module_box, sat_box, mav_box]
+    tab = widgets.Tab(children=children)
+    tab.set_title(0, 'Generic Parameters')
+    tab.set_title(1, 'Module Parameters')
+    tab.set_title(2, 'SAT Parameters')
+    tab.set_title(3, 'MAV Parameters')
+
+    display(tab, load_button_widget, output)
 
 
 # COMMAND ----------
