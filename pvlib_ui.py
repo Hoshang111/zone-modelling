@@ -11,6 +11,7 @@ from pvlib.pvsystem import PVSystem
 from pvlib.modelchain import ModelChain
 from pvlib.location import Location
 from pvlib.temperature import TEMPERATURE_MODEL_PARAMETERS
+import numpy as np
 
 class pvlib_wrapper():
     def __init__(self):
@@ -246,6 +247,7 @@ pv_model = Custom_System()
 
 import pvlib as pl
 import pandas as pd
+import matplotlib.pyplot as plt
 from pvlib.pvsystem import PVSystem, FixedMount
 from pvlib.location import Location
 from pvlib.modelchain import ModelChain
@@ -306,6 +308,7 @@ def create_simdata(metdata, albedo):
         simdata_df['solar_azimuth'] = df_solcast['Azimuth']
         simdata_df['solar_zenith'] = df_solcast['Zenith']
         simdata_df['albedo'] = df_solcast['AlbedoDaily']
+        simdata_df['pressure'] = df_solcast['SurfacePressure']
         simdata_df.set_index('PeriodStart')
 
         return simdata_df
@@ -397,11 +400,10 @@ def pvlib_ui():
             latitude, longitude = get_location(met_data_widget.value)
             simdata_df = create_simdata(met_data_widget.value, albedo_widget.value)
             System = create_new_system(simdata_df)
-            PV_location = Location(latitude, longitude)
-            inverter_database = pl.pvsystem.retrieve_sam(name='cecinverter')
-            inverter = inverter_database.ABB__PVI_3_0_OUTD_S_US__208V_
+            location = Location(latitude, longitude)
 
-            PV_system = PVSystem(surface_tilt=System.surface_tilt,
+
+            SystemPV = PVSystem(surface_tilt=System.surface_tilt,
                                     surface_azimuth=System.surface_azimuth,
                                     albedo=System.albedo,
                                     module=System.module_name,
@@ -410,37 +412,61 @@ def pvlib_ui():
                                     temperature_model_parameters=System.temperature_model_parameters,
                                     modules_per_string=System.modules_per_string,
                                     strings_per_inverter=System.strings_per_inverter,
-                                    inverter=inverter,
-                                    inverter_parameters=inverter,
                                     racking_model=System.racking_model)
             
             simdata_df['surface_tilt'] = System.surface_tilt
             simdata_df['surface_azimuth'] = System.surface_azimuth
 
-            
-            print(System.module_parameters)
-            # Get Irradiance
-            # poa_irradiance = PV_system.get_irradiance(solar_zenith=simdata_df['solar_zenith'],solar_azimuth=simdata_df['solar_azimuth'],dni=simdata_df['dni'], ghi=simdata_df['ghi'], dhi=simdata_df['dhi'], airmass=1.5,albedo=simdata_df['albedo'])
-            # df = simdata_df.join(poa_irradiance, how="outer")
-            
-            # Get Cell Temperature
-            # cell_temps = []
-            # for row in df.iterrows():
-            #     poa_global = row[1][9]
-            #     temp_air = row[1][1]
-            #     wind_speed = row[1][5]
-            #     model = System.model
+            poa_irradiance = SystemPV.get_irradiance(solar_zenith=simdata_df['solar_zenith'],solar_azimuth=simdata_df['solar_azimuth'],dni=simdata_df['dni'], ghi=simdata_df['ghi'], dhi=simdata_df['dhi'], dni_extra=None, airmass=None, albedo=simdata_df['albedo'], model='haydavies')
 
-            #     cell_temp = PV_system.get_cell_temperature(poa_global=poa_global, temp_air=temp_air,wind_speed=wind_speed,model=model)
-            #     cell_temps.append(cell_temp)
+            simdata_df = simdata_df.join(poa_irradiance, how="outer")
+            Irrad_mult = 1.5
+            simdata_df['poa_max'] = simdata_df['poa_global'] * Irrad_mult
 
-            # df['Cell Temperature'] = cell_temps
+            cell_temp = SystemPV.get_cell_temperature(poa_global=simdata_df['poa_global'], temp_air=simdata_df['temp_air'],wind_speed=simdata_df['wind_speed'],model="sapm")
+            simdata_df['Cell Temperature'] = cell_temp
 
+            alpha_sc = System.module_parameters.loc["alpha_sc"]
+            a_ref = System.module_parameters.loc["a_ref"]
+            I_L_ref = System.module_parameters.loc["I_L_ref"]
+            I_o_ref = System.module_parameters.loc["I_o_ref"]
+            Adjust = System.module_parameters.loc["Adjust"]
+            R_s = System.module_parameters.loc["R_s"]
+            R_sh_ref = System.module_parameters.loc["R_sh_ref"]
 
-            # Get Single Diode Equation
+            IL, I0, Rs, Rsh, nNsVth = pl.pvsystem.calcparams_cec(effective_irradiance=simdata_df["poa_max"],
+                                        temp_cell=simdata_df['Cell Temperature'], 
+                                        alpha_sc=alpha_sc,
+                                        I_L_ref=I_L_ref,
+                                        I_o_ref=I_o_ref,
+                                        R_s=R_s,
+                                        R_sh_ref=R_sh_ref,
+                                        a_ref=a_ref,
+                                        Adjust=Adjust)
 
+            curve_info = pl.pvsystem.singlediode(photocurrent=IL[0],
+                                                saturation_current=I0[0],
+                                                resistance_series=Rs,
+                                                resistance_shunt=Rsh[0],
+                                                nNsVth=nNsVth[0],
+                                                ivcurve_pnts=1000,
+                                                method='lambertw')
 
-            System_ModelChain = ModelChain(PV_system, PV_location, aoi_model="no_loss")
+            # simdata_df['curve_info'] = curve_info
+            plt.figure()
+            v_mp = curve_info['v_mp']
+            i_mp = curve_info['i_mp']
+            # mark the MPP
+            plt.plot(curve_info['v'], curve_info['i'], label="label")
+            plt.plot([v_mp], [i_mp], ls='', marker='o', c='k')
+
+            plt.legend(loc=(1.0, 0))
+            plt.xlabel('Module voltage [V]')
+            plt.ylabel('Module current [A]')
+            plt.title("SAT")
+            plt.show()
+            plt.gcf().set_tight_layout(True)
+
 
     layout = widgets.Layout(width='auto')
     style = {'description_width': 'initial'}
@@ -511,7 +537,3 @@ def pvlib_ui():
 # COMMAND ----------
 
 pvlib_ui()
-
-# COMMAND ----------
-
-
