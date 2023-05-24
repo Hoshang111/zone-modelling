@@ -58,7 +58,7 @@ class pvlib_wrapper():
 
 
         7. 
-        Last Step. Return a dataframe with the hourly Pmp and curve_info. This is done using the "pvsystem.singlediod" equation
+        Last Step. Return a dataframe with the hourly Pmp and curve_info. This is done using the "pvsystem.singlediode" equation
 
         """
         # this is where I plan to initialise the UI.
@@ -305,7 +305,7 @@ def create_simdata(metdata, albedo):
         simdata_df['wind_speed'] = df_solcast['WindSpeed10m']
         simdata_df['solar_azimuth'] = df_solcast['Azimuth']
         simdata_df['solar_zenith'] = df_solcast['Zenith']
-        simdata_df['albedo'] = albedo
+        simdata_df['albedo'] = df_solcast['AlbedoDaily']
         simdata_df.set_index('PeriodStart')
 
         return simdata_df
@@ -398,6 +398,9 @@ def pvlib_ui():
             simdata_df = create_simdata(met_data_widget.value, albedo_widget.value)
             System = create_new_system(simdata_df)
             PV_location = Location(latitude, longitude)
+            inverter_database = pl.pvsystem.retrieve_sam(name='cecinverter')
+            inverter = inverter_database.ABB__PVI_3_0_OUTD_S_US__208V_
+
             PV_system = PVSystem(surface_tilt=System.surface_tilt,
                                     surface_azimuth=System.surface_azimuth,
                                     albedo=System.albedo,
@@ -407,11 +410,37 @@ def pvlib_ui():
                                     temperature_model_parameters=System.temperature_model_parameters,
                                     modules_per_string=System.modules_per_string,
                                     strings_per_inverter=System.strings_per_inverter,
+                                    inverter=inverter,
+                                    inverter_parameters=inverter,
                                     racking_model=System.racking_model)
-            System_ModelChain = ModelChain(PV_system, PV_location)
-
+            
             simdata_df['surface_tilt'] = System.surface_tilt
             simdata_df['surface_azimuth'] = System.surface_azimuth
+
+            
+            print(System.module_parameters)
+            # Get Irradiance
+            # poa_irradiance = PV_system.get_irradiance(solar_zenith=simdata_df['solar_zenith'],solar_azimuth=simdata_df['solar_azimuth'],dni=simdata_df['dni'], ghi=simdata_df['ghi'], dhi=simdata_df['dhi'], airmass=1.5,albedo=simdata_df['albedo'])
+            # df = simdata_df.join(poa_irradiance, how="outer")
+            
+            # Get Cell Temperature
+            # cell_temps = []
+            # for row in df.iterrows():
+            #     poa_global = row[1][9]
+            #     temp_air = row[1][1]
+            #     wind_speed = row[1][5]
+            #     model = System.model
+
+            #     cell_temp = PV_system.get_cell_temperature(poa_global=poa_global, temp_air=temp_air,wind_speed=wind_speed,model=model)
+            #     cell_temps.append(cell_temp)
+
+            # df['Cell Temperature'] = cell_temps
+
+
+            # Get Single Diode Equation
+
+
+            System_ModelChain = ModelChain(PV_system, PV_location, aoi_model="no_loss")
 
     layout = widgets.Layout(width='auto')
     style = {'description_width': 'initial'}
