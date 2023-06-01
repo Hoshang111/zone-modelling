@@ -5,11 +5,12 @@
 # COMMAND ----------
 
 # DBTITLE 1,Custom System
-from IPython.display import display
+from IPython.display import display, clear_output
 from datetime import datetime
 from scenario_class import Scenario
 from databricks.sdk.runtime import spark
 import pandas as pd
+pd.options.mode.chained_assignment = None  # default='warn' #suppress anoying warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
@@ -19,6 +20,7 @@ from pvlib.modelchain import ModelChain
 from pvlib.location import Location
 from pvlib.temperature import TEMPERATURE_MODEL_PARAMETERS
 from IPython.display import display
+from datetime import datetime
 
 class Custom_System:
     def __init__(self):
@@ -68,6 +70,9 @@ class Custom_System:
 
         self.ui()
 
+    def print_status(self, status):
+        print("{}:  {}".format(datetime.now(),status))
+
     def get_modules(self):
         """
         Return a list of all modules in the online database
@@ -82,9 +87,6 @@ class Custom_System:
         # CECMODS.T.head()
         # https://pvsc-python-tutorials.github.io/PVSC48-Python-Tutorial/Tutorial%204%20-%20Model%20a%20Module%27s%20Performance.html
         # CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
-        # module_list = []
-        # for col in CECMODS.columns:
-        #     module_list.append(col)
 
         # Code to retrieve custom modules from Databricks file store, format same as pl.pvsystem.retrieve_sam
         df = spark.sql("select * from sandbox.pv_data.ref_mods").toPandas().drop([0, 1]).set_index("Name",drop=True)
@@ -186,8 +188,8 @@ class Custom_System:
                                                         max_angle=self.sat_max_angle,  # a common maximum rotation
                                                         backtrack=self.sat_backtrack,
                                                         gcr=self.sat_mod_length / self.sat_pitch)
-            # created for use in pvfactors timeseries
-            orientation = sat_mount.get_orientation(self.sim_data['solar_zenith'],self.sim_data['solar_azimuth'])
+            # created for use in pvfactors timeseries, replace NaN with 0
+            orientation = sat_mount.get_orientation(self.sim_data['solar_zenith'],self.sim_data['solar_azimuth']).fillna(0)
             self.surface_tilt = orientation['surface_tilt']
             self.surface_azimuth = orientation['surface_azimuth']
         else:
@@ -207,7 +209,6 @@ class Custom_System:
         self.temperature_model_parameters = TEMPERATURE_MODEL_PARAMETERS[self.model][string]
 
     def get_module_parameters(self, module_name):
-        # CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
         self.module_parameters = self.modules[module_name]
 
     def get_location(self):
@@ -240,6 +241,7 @@ class Custom_System:
             
     def get_irradiance(self):
         if self.bifacial == True:
+            # npoints set to 10, default 100. Reduction in accuracy deemed insignificant for power/voltage modelling.
             poa_irradiance = pl.bifacial.infinite_sheds.get_irradiance(surface_tilt=self.surface_tilt, 
                                                                        surface_azimuth=self.surface_azimuth, 
                                                                        solar_zenith=self.sim_data['solar_zenith'], 
@@ -252,6 +254,7 @@ class Custom_System:
                                                                        dni=self.sim_data['dni'], 
                                                                        albedo=self.sim_data['albedo'], 
                                                                        bifaciality=self.bifacial_factor,
+                                                                       npoints=10,
                                                                        vectorize=True)
         else:
             poa_irradiance = self.SystemPV.get_irradiance(solar_zenith=self.sim_data['solar_zenith'],
@@ -280,8 +283,11 @@ class Custom_System:
         R_sh_ref = self.module_parameters.loc["R_sh_ref"]
         
         yearly_df = system.sim_data.iloc[:105120]
+        # yearly_df = system.sim_data
         self.yearly_df = yearly_df
 
+
+        # Calcparams_cec
         IL, I0, Rs, Rsh, nNsVth = pl.pvsystem.calcparams_cec(effective_irradiance=yearly_df["poa_global"],
                         temp_cell=yearly_df['cell_temperature'], 
                         alpha_sc=alpha_sc,
@@ -291,7 +297,8 @@ class Custom_System:
                         R_sh_ref=R_sh_ref,
                         a_ref=a_ref,
                         Adjust=Adjust)
-
+        
+        # Solve singlediode
         curve_info = pl.pvsystem.singlediode(photocurrent=IL,
                                 saturation_current=I0,
                                 resistance_series=Rs,
@@ -336,9 +343,12 @@ class Custom_System:
                     
         def on_load_clicked(_):
             with output:
-                print("Running, this may take a few seconds")
+                # Clear any warnings.
+                clear_output()
+                self.print_status("Running, this may take a few seconds...")
+                self.print_status("Loading met data...")
                 self.get_met_data(met_data_widget.value)
-                print("Met Data Loaded")
+                
 
                 self.set_generic_params(array_type_widget.value, 
                             modules_per_string_widget.value, 
@@ -362,23 +372,33 @@ class Custom_System:
                 elif array_type_widget.value == "MAV":
                     self.set_mav_params(mav_tilt_widget.value, mav_azimuth_widget.value)
 
+                self.print_status("Loading Module Parameters...")
                 self.get_module_parameters(module_widget.value)
-                print("Module Parameters Loaded")
+
+                self.print_status("Loading Temperature Parameters...")
                 self.get_temperature_model_parameters()
-                print("Temperature Parameters Loaded")
+
+                self.print_status("Calculating Tilt, Azimuth...")
                 self.get_tilt_azimuth()
-                print("Tilt Azimuth Loaded")
+
                 latitude, longitude = self.get_location()
 
+                self.print_status("Creating PVSystem...")
                 self.create_pvsystem()
-                print("PVSystem Created")
-                self.get_irradiance()
-                print("Fetched Irradiance")
-                self.get_cell_temperature()
-                print("Fetched Cell Temperature")
-                self.get_iv_curve()
-                print("Run Finished!")
 
+                self.print_status("Calculating Irradiance...")
+                self.get_irradiance()
+
+                self.print_status("Calculating Cell Temperature...")
+                self.get_cell_temperature()
+
+                self.print_status("Calculating IV curves...")
+                self.get_iv_curve()
+                self.print_status("Run Finished!")
+
+
+        # Clear any warnings.
+        clear_output()
 
         layout = widgets.Layout(width='auto')
         style = {'description_width': 'initial'}
@@ -444,6 +464,8 @@ class Custom_System:
         display(tab, load_button_widget, output)
 
 
+
+
 # COMMAND ----------
 
 # DBTITLE 1,PVLib UI
@@ -453,7 +475,7 @@ system = Custom_System()
 
 # Code to output yearly_df using spark interface
 # adds pandas datetime index back in as column
-spark.createDataFrame(system.yearly_df.reset_index()).display()
+spark.createDataFrame(system.sim_data.reset_index()).display()
 
 # COMMAND ----------
 
