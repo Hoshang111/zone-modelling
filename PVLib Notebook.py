@@ -64,6 +64,7 @@ class Custom_System:
         self.SystemPV = None
         self.curves = None
         self.yearly_df = None
+        self.modules = self.get_modules()
 
         self.ui()
 
@@ -80,12 +81,32 @@ class Custom_System:
         # as indices
         # CECMODS.T.head()
         # https://pvsc-python-tutorials.github.io/PVSC48-Python-Tutorial/Tutorial%204%20-%20Model%20a%20Module%27s%20Performance.html
+        # CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
+        # module_list = []
+        # for col in CECMODS.columns:
+        #     module_list.append(col)
+
+        # Code to retrieve custom modules from Databricks file store, format same as pl.pvsystem.retrieve_sam
+        df = spark.sql("select * from sandbox.pv_data.ref_mods").toPandas().drop([0, 1]).set_index("Name",drop=True)
+
+        df.columns = df.columns.str.replace(' ', '_')
+        df.index = pl.pvsystem._normalize_sam_product_names(df.index)
+        df = df.transpose()
+
+        if 'ADRCoefficients' in df.index:
+            ad_ce = 'ADRCoefficients'
+            # for each inverter, parses a string of coefficients like
+            # ' 1.33, 2.11, 3.12' into a list containing floats:
+            # [1.33, 2.11, 3.12]
+            df.loc[ad_ce] = df.loc[ad_ce].map(lambda x: list(
+                map(float, x.strip(' []').split())))
+
+        # Retrieve CEC Modules from web
         CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
-        module_list = []
-        for col in CECMODS.columns:
-            module_list.append(col)
+
+        modules = pd.concat([df,CECMODS], axis=1)
         
-        return module_list
+        return modules
 
 
     def get_met_data_sources(self):
@@ -186,8 +207,8 @@ class Custom_System:
         self.temperature_model_parameters = TEMPERATURE_MODEL_PARAMETERS[self.model][string]
 
     def get_module_parameters(self, module_name):
-        CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
-        self.module_parameters = CECMODS[module_name]
+        # CECMODS = pl.pvsystem.retrieve_sam(path="https://raw.githubusercontent.com/NREL/SAM/develop/deploy/libraries/CEC%20Modules.csv")
+        self.module_parameters = self.modules[module_name]
 
     def get_location(self):
         string = self.met_data.strip('solcast')
@@ -261,27 +282,15 @@ class Custom_System:
         yearly_df = system.sim_data.iloc[:105120]
         self.yearly_df = yearly_df
 
-
-        # JASolar JAM78D40-660/GB 
         IL, I0, Rs, Rsh, nNsVth = pl.pvsystem.calcparams_cec(effective_irradiance=yearly_df["poa_global"],
-                temp_cell=yearly_df['cell_temperature'], 
-                alpha_sc=0.0060975,
-                I_L_ref=14.12001712,
-                I_o_ref=0.00000000000541,
-                R_s=0.09096415585,
-                R_sh_ref=5915.570223,
-                a_ref=1.968850324,
-                Adjust=0.4165397173)
-
-        # IL, I0, Rs, Rsh, nNsVth = pl.pvsystem.calcparams_cec(effective_irradiance=yearly_df["poa_global"],
-        #                 temp_cell=yearly_df['cell_temperature'], 
-        #                 alpha_sc=alpha_sc,
-        #                 I_L_ref=I_L_ref,
-        #                 I_o_ref=I_o_ref,
-        #                 R_s=R_s,
-        #                 R_sh_ref=R_sh_ref,
-        #                 a_ref=a_ref,
-        #                 Adjust=Adjust)
+                        temp_cell=yearly_df['cell_temperature'], 
+                        alpha_sc=alpha_sc,
+                        I_L_ref=I_L_ref,
+                        I_o_ref=I_o_ref,
+                        R_s=R_s,
+                        R_sh_ref=R_sh_ref,
+                        a_ref=a_ref,
+                        Adjust=Adjust)
 
         curve_info = pl.pvsystem.singlediode(photocurrent=IL,
                                 saturation_current=I0,
@@ -387,7 +396,7 @@ class Custom_System:
         # Create Module Param Widgets
         bifacial_widget = widgets.Checkbox(value=False, description='Bifacial', disabled=False,indent=False, layout=layout, style=style)
         bifacial_factor_widget = widgets.FloatText(value=0.85, description='Bifacial Factor', disabled=False, layout=layout, style=style)
-        module_widget = widgets.Dropdown(options=self.get_modules(), description='Module Name', value=None)
+        module_widget = widgets.Dropdown(options=[col for col in self.modules], description='Module Name', value=None)
         module_type_widget = widgets.RadioButtons(options=['glass_polymer', 'glass_glass'], description='Module Type', value=None, layout=layout, style=style)
 
         # Create SAT Param Widgets
@@ -451,8 +460,7 @@ pmp_df.to_csv(pmp, index=True, encoding="utf-8")
 
 # COMMAND ----------
 
-# DBTITLE 1,Pmp plot
-system.yearly_df.plot(y='p_mp', use_index=True)
+system.yearly_df
 
 # COMMAND ----------
 
@@ -461,107 +469,34 @@ scenario = Scenario()
 
 # COMMAND ----------
 
-# DBTITLE 1,Create BESS Dataframe
-df = scenario.optimisation.df
+scenario.optimisation.df
+
+# COMMAND ----------
+
 newdf = pd.DataFrame(np.repeat(df.values, 12, axis=0))
 newdf.columns = df.columns
-newdf = newdf.set_index(system.yearly_df.index)
-optimisation = newdf.join(system.yearly_df, how="outer")
-assumption = scenario.assumption.df.set_index('period_end').sort_index()
-
-PC_VSC_flow = optimisation['PC_VSC_flow']
-p_mp = optimisation['p_mp']
-operational_capacity = assumption.loc[assumption['identifier'] == 'PC_battery_operational_capacity']
-
-BESS_df = pd.DataFrame()
-num_inverters = 1554
-
-BESS_df['Demand (MW)'] = PC_VSC_flow.div(num_inverters)
-BESS_df['PV Production (MW)'] = (p_mp)*12930/1000000
-BESS_df['PV Production (MW)'] = BESS_df['PV Production (MW)'].fillna(0)
-BESS_df['BESS Size (MWh)'] = 34
-
-BESS_df['Net Flow of Energy (MWh)'] = (BESS_df['PV Production (MW)'] - BESS_df['Demand (MW)'])/12
-
-charge_conditions = [BESS_df['Net Flow of Energy (MWh)'] >= 0, BESS_df['Net Flow of Energy (MWh)'] < 0]
-charge_choices = ['Charge', 'Discharge']
-BESS_df['Charge/Discharge'] = np.select(charge_conditions, charge_choices)
-
-bess_states = []
-spill = []
-bess_state = 34
-bess_effiency = 0.95
-inverter_effiency = 0.95
-bess_power_limit = 2/12
-current_spill = 0
-
-# Energy Balance
-for row in BESS_df.iterrows():
-    net_flow = row[1][3]
-    if bess_state + net_flow >= 0 and bess_state + net_flow <= 34:
-        if net_flow > bess_power_limit:
-            current_spill += net_flow - bess_power_limit
-            bess_state += bess_power_limit*bess_effiency
-        else:
-            bess_state += net_flow*bess_effiency
-    bess_states.append(bess_state)
-    spill.append(current_spill)
-
-BESS_df['BESS State of Charge (MWh)'] = bess_states
-BESS_df['Spill (MWh)'] = spill
-BESS_df
+newdf
 
 # COMMAND ----------
 
-# DBTITLE 1,BESS Plots
-BESS_df.plot(y='Net Flow of Energy (MWh)', use_index=True)
+df = pd.read_csv("/dbfs/FileStore/pvlib_ui/pmp_df.csv")
+df
 
 # COMMAND ----------
 
-BESS_df.head(252)
+        plt.figure()
+        v_mp = system.yearly_df['v_mp']
+        i_mp = system.yearly_df['i_mp']
+        plt.plot(system.curves['v'], system.curves['i'], label="label")
+        plt.plot([v_mp], [i_mp], ls='', marker='o', c='k')
+    
+        plt.legend(loc=(1.0, 0))
+        plt.xlabel('Module voltage [V]')
+        plt.ylabel('Module current [A]')
+        plt.title("SAT")
+        plt.show()
+        plt.gcf().set_tight_layout(True)
 
 # COMMAND ----------
 
-# DBTITLE 1,Save BESS Dataframe
-df = BESS_df
-outdir = '/dbfs/FileStore/pvlib_ui/'
-bess = outdir+ 'bess_df' + '.csv'
-df.to_csv(bess, index=True, encoding="utf-8")
 
-# COMMAND ----------
-
-# DBTITLE 1,Modelchain
-df = system.yearly_df
-latitude, longitude = system.get_location()
-Location = pl.location.Location(latitude, longitude)
-
-solcast_query = "select * from sandbox.met_data." + system.met_data
-df_solcast = spark.sql(solcast_query).toPandas()
-weather = pd.DataFrame()
-weather['precipitable_water'] = df_solcast['PrecipitableWater']
-weather = weather.iloc[:105120]
-weather =weather.set_index(df.index)
-
-df['precipitable_water'] = weather['precipitable_water']
-df['poa_diffuse'] = df['poa_front_diffuse'] + df['poa_back_diffuse']
-df['poa_direct'] = df['poa_front_direct'] + df['poa_back_direct']
- 
-mc = pl.modelchain.ModelChain(system.SystemPV, Location, ac_model=None, aoi_model="no_loss")
-mc.run_model_from_poa(df)
-
-
-# COMMAND ----------
-
-# DBTITLE 1,IV Curves
-plt.figure()
-v_mp = system.yearly_df['v_mp']
-i_mp = system.yearly_df['i_mp']
-plt.plot(system.curves['v'], system.curves['i'], label="label")
-plt.plot([v_mp], [i_mp], ls='', marker='o', c='k')
-
-plt.legend(loc=(1.0, 0))
-plt.xlabel('Module voltage [V]')
-plt.ylabel('Module current [A]')
-plt.title("SAT")
-plt.show()
-plt.gcf().set_tight_layout(True)
