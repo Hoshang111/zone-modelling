@@ -390,8 +390,8 @@ class Custom_System:
         array_type_widget.observe(on_value_change, 'value')
         modules_per_string_widget = widgets.IntText(value=1, description='Modules Per String', disabled=False, layout=layout, style=style)
         strings_per_inverter_widget = widgets.IntText(value=1, description='Strings Per Inverter', disabled=False, layout=layout, style=style)
-        racking_model_widget = widgets.Dropdown(options=['open_rack', 'close_mount', 'insulated_back'], description='Racking Model', value=None, layout=layout, style=style)
-        model_widget = widgets.Dropdown(options=['sapm', 'pvsyst', 'faiman', 'fuentes', 'noct_sam'], description='Model', value=None, layout=layout, style=style)
+        racking_model_widget = widgets.Dropdown(options=['open_rack', 'close_mount', 'insulated_back'], description='Racking Model', value='open_rack', layout=layout, style=style)
+        model_widget = widgets.Dropdown(options=['sapm', 'pvsyst', 'faiman', 'fuentes', 'noct_sam'], description='Model', value='sapm', layout=layout, style=style)
 
         # Create Module Param Widgets
         bifacial_widget = widgets.Checkbox(value=False, description='Bifacial', disabled=False,indent=False, layout=layout, style=style)
@@ -403,14 +403,14 @@ class Custom_System:
         sat_axis_tilt_widget = widgets.FloatText(value=0, description='Axis Tilt', disabled=True, layout=layout, style=style)
         sat_axis_azimuth_widget = widgets.FloatText(value=0, description='Axis Azimuth', disabled=True, layout=layout, style=style)
         sat_max_angle_widget = widgets.FloatText(value=60, description='Max Angle', disabled=True, layout=layout, style=style)
-        sat_backtrack_widget = widgets.Checkbox(value=False, description='Backtrack', disabled=True,indent=False, layout=layout, style=style)
+        sat_backtrack_widget = widgets.Checkbox(value=True, description='Backtrack', disabled=True,indent=False, layout=layout, style=style)
         sat_pitch_widget = widgets.FloatText(value=5, description='Pitch', disabled=True, layout=layout, style=style)
         sat_height_widget = widgets.FloatText(value=1.5, description='Height', disabled=True, layout=layout, style=style)
         sat_mod_length_widget = widgets.FloatText(value=2.1, description='Module Length', disabled=True, layout=layout, style=style)
 
         # Create MAV Param Widgets
-        mav_tilt_widget = widgets.FloatText(value=0, description='Tilt', disabled=True, layout=layout, style=style)
-        mav_azimuth_widget = widgets.FloatText(value=0, description='Azimuth', disabled=True, layout=layout, style=style)
+        mav_tilt_widget = widgets.FloatText(value=10, description='Tilt', disabled=True, layout=layout, style=style)
+        mav_azimuth_widget = widgets.FloatText(value=90, description='Azimuth', disabled=True, layout=layout, style=style)
 
         # Create Common Tab
         array_box =  widgets.HBox([array_type_widget])
@@ -448,6 +448,12 @@ class Custom_System:
 
 # DBTITLE 1,PVLib UI
 system = Custom_System()
+
+# COMMAND ----------
+
+# Code to output yearly_df using spark interface
+# adds pandas datetime index back in as column
+spark.createDataFrame(system.yearly_df.reset_index()).display()
 
 # COMMAND ----------
 
