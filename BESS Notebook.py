@@ -81,3 +81,47 @@ df_solcast = df_solcast.drop(columns=['PeriodEnd', 'PeriodStart'])
 optimisation = optimisation.reset_index(drop=True)
 df = optimisation.join(df_solcast, how='outer')
 df
+
+# COMMAND ----------
+
+# Matts attempt (work in progress)
+
+"""
+SCENARIO: AA_POS5_R01_SBP01_S1
+Assume 1554 
+
+PCU:
+SMA SC-NXT 3520
+AC Power @35degC (MVA)          = 3.520
+# AC Power @50degC (MVA)        = ?
+# MPPT Range Low @35degC (V)    = 962
+# MPPT Range Low @35degC (V)    = 1325
+DC-DC Power @35degC (MW)        = 9.6 (6x DC-DC converters per PCU, each with 1.6MW power)
+Max Bess per DC-DC (4hr rate)   = 1
+Max Bess per DC-DC (5hr rate)   = 1.5
+
+BESS:
+CATL EnerC+
+Usable Energy (MWh)             = 3.82862
+
+Zone Configuration:
+1x PCU
+
+6x BESS (total energy = 6x3.82862 = 22.97172) (4hr Rate)
+OR
+9x BESS (total energy = 9x3.82862 = 34.45758) (5hr Rate)
+
+PV = JA Solar 144HC N-Type
+28modules x 692strings (monofacial) (approximately 11.82687MWp)
+OR
+28modules x 653 (bifacial) (approximately 11.15743MWp)
+
+"""
+
+# Rules
+"""
+1. meet output power demand
+2. 
+"""
+
+
