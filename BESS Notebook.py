@@ -6,6 +6,7 @@ from scenario_class import Scenario
 from databricks.sdk.runtime import spark
 import pandas as pd
 import numpy as np
+import pvlib as pl
 
 scenario = Scenario()
 
@@ -123,5 +124,191 @@ OR
 1. meet output power demand
 2. 
 """
+
+df = pd.read_csv('/dbfs/FileStore/pvlib_ui/JAM72D40_df610GB.csv')
+
+
+
+# COMMAND ----------
+
+df_mpp = pl.pvsystem.max_power_point(photocurrent=df['IL'], saturation_current=df['I0'], resistance_series=df['Rs'], resistance_shunt=df['Rsh'], nNsVth=df['nNsVth'], d2mutau=0, NsVbi=np.inf, method='brentq')
+
+# COMMAND ----------
+
+df_working = df.merge(df_mpp, left_index=True, right_index=True).copy()
+
+# COMMAND ----------
+
+t_delta = 1/12                          # Time delta between rows is 5min or 1/12hrs
+demand_ac = 3150/1554                   # Assume static demand of VSC power divided by number of inverters
+
+# Subarray Details
+modules = 28
+strings = 692
+
+# BESS details
+bess_cap_mwh = 34.45                 # BESS capacity in MWh
+
+# DC-DC details
+dcdc_p_mw = 9.6                         # DC-DC converter power
+
+# Inverter details
+inv_p_mw = 3.520
+
+# Initialise dataframes
+df_working['pv_vmp_v'] = modules * df_working['v_mp']
+df_working['pv_imp_a'] = strings * df_working['i_mp']
+df_working['pv_pmp_mw'] = df_working['p_mp'] * modules * strings/1000000
+
+df_working['dcdc_p_mw'] = 0
+df_working['dcdc_p_lmt_chrg_mw'] = -dcdc_p_mw
+df_working['dcdc_p_lmt_dschrg_mw'] = dcdc_p_mw
+
+df_working['bess_p_mw'] = 0
+df_working['bess_soc_start_mwh'] = bess_cap_mwh
+df_working['bess_p_lmt_mw'] = 0
+
+df_working['bess_p_lmt_chrg_mw'] = 0
+df_working['bess_p_lmt_dschrg_mw'] = 0
+df_working['bess_cap_lmt_chrg_mwh'] = 0
+df_working['bess_cap_lmt_dschrg_mwh'] = 0
+
+df_working['inv_p_dc_mw'] = np.nan
+df_working['inv_p_dc_lmt_mw'] = 3.520
+
+df_working['p_net_dc'] = 0
+df_working['bess_soc_end_mwh'] = bess_cap_mwh
+df_working['spill_mw'] = 0
+
+# Define function that controls the BESS charging
+def bess_chrg(df, idx, p, demand_dc):
+    """
+    Function for controlling BESS charging
+    """
+    # Determine bess charge power limit
+    # Charging power is negative, therefore this will be the max of:
+    #   Available charge power, p
+    #   Bess p limit charge
+    #   DC-DC Converter p limit charge
+    p_limit = max(-p, df.at[idx, 'dcdc_p_lmt_chrg_mw'], df.at[idx, 'bess_p_lmt_chrg_mw'])
+
+    df.at[idx, 'bess_p_lmt_mw'] = p_limit
+
+    # Charging
+    # Increase BESS SoC
+    df.at[idx, 'bess_soc_end_mwh'] = df.at[idx, 'bess_soc_start_mwh'] + p_limit*t_delta
+
+    # Output at inverter
+    df.at[idx, 'inv_p_dc_mw'] = demand_dc
+
+    # Record any spill
+    df.at[idx, 'spill'] = df.at[idx, 'pv_pmp_mw'] - demand_dc - p_limit
+
+    return df
+
+# Define function that controls the BESS discharging
+def bess_dschrg(df, idx, p, demand_dc):
+    """
+    Function for controlling BESS discharging
+    """
+    # Determine bess discharge power limit
+    # Discharging power is positive, p_limit will be the minimum of available p, dcdc p limit and bess p limit
+    p_limit = min(-p, df.at[idx, 'dcdc_p_lmt_dschrg_mw'], df.at[idx, 'bess_p_lmt_dschrg_mw'])
+
+    df.at[idx, 'bess_p_lmt_mw'] = p_limit
+
+    # Discharging
+    # Reduce BESS SoC
+    df.at[idx, 'bess_soc_end_mwh'] = df.at[idx, 'bess_soc_start_mwh'] - p_limit*t_delta
+    
+    # Output at inverter
+    df.at[idx, 'inv_p_dc_mw'] = p_limit + df.at[idx, 'pv_pmp_mw']
+
+    # Record any spill
+    df.at[idx, 'spill'] = 0
+
+    return df
+
+def get_bess_params(df, idx):
+    """
+    Function for assigning BESS parameters for a given time step
+    """
+    df.at[idx, 'bess_cap_lmt_chrg_mwh'] = bess_cap_mwh - df.at[idx, 'bess_soc_start_mwh']
+    df.at[idx, 'bess_cap_lmt_dschrg_mwh'] =  df.at[idx, 'bess_soc_start_mwh']
+    df.at[idx, 'bess_p_lmt_chrg_mw'] = -1*df.at[idx, 'bess_cap_lmt_chrg_mwh']/t_delta
+    df.at[idx, 'bess_p_lmt_dschrg_mw'] = df.at[idx, 'bess_cap_lmt_dschrg_mwh']/t_delta
+    return df
+
+def get_dcdc_params(df, idx):
+    """
+    Function for assigning DC-DC converter parameters for a given time step
+    """
+    df.at[idx, 'dcdc_p_lmt_chrg_mw'] = -dcdc_p_mw
+    df.at[idx, 'dcdc_p_lmt_dschrg_mw'] = dcdc_p_mw
+    return df
+
+def get_inv_params(df, idx):
+    """
+    Function for assigning Inverter parameters for a given time step
+    """
+    df.at[idx, 'inv_p_dc_lmt_mw'] = inv_p_mw
+    return df
+
+
+def simulate(df):
+    """
+    Function for itterating through simulation time series
+    """
+    for idx, row in df.iterrows():
+
+        # Calculate demand_dc. This will be a function of 'demand_ac' and inverter efficiency
+        # This is a placeholder for a future function.
+        demand_dc = demand_ac
+
+        # Get BESS SoC from previous time step
+        if idx > 0:
+            df.at[idx, 'bess_soc_start_mwh'] = df.at[idx-1, 'bess_soc_end_mwh']
+
+        # Calculate difference between supply and demand.
+        df.at[idx, 'p_net_dc'] = df.at[idx, 'pv_pmp_mw'] - demand_dc
+
+        # Calculate device parameters for given time step
+        df = get_bess_params(df, idx)
+        df = get_dcdc_params(df, idx)
+        df = get_bess_params(df, idx)
+
+        
+        #######################################################
+        # If p_net_dc is 0, supply meets demand, bess does nothing
+        #######################################################
+        if df.at[idx, 'p_net_dc'] == 0:
+            df.at[idx, 'inv_p_dc_mw'] = demand_dc
+        
+        #######################################################
+        # If p_net_dc is positive, excess power can charge bess
+        #######################################################
+        if df.at[idx, 'p_net_dc'] > 0:
+            df = bess_chrg(df, idx, df.at[idx, 'p_net_dc'], demand_dc)
+
+        #######################################################
+        # If p_net_dc is negative, bess power must be used 
+        #######################################################
+        if df.at[idx, 'p_net_dc'] < 0:
+            df = bess_dschrg(df, idx, df.at[idx, 'p_net_dc'], demand_dc)
+
+    return df.round(decimals = 2)
+
+
+# COMMAND ----------
+
+df_results = simulate(df_working.iloc[:105120])
+# df_results = simulate(df_working.iloc[:288])
+# df_working.iloc[:105120]
+
+# COMMAND ----------
+
+spark.createDataFrame(df_results).display()
+
+# COMMAND ----------
 
 
